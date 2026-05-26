@@ -54,7 +54,13 @@ npm install
 echo "[6/8] Setting up data directory..."
 mkdir -p "$PI_DIR/data"
 
-echo "[7/8] Setting up systemd service..."
+echo "[7/9] Setting default volume..."
+amixer -c 0 set Speaker 60% 2>/dev/null || true
+amixer -c 0 set Capture 40 2>/dev/null || true
+amixer -c 0 set "ADC PCM" 200 2>/dev/null || true
+sudo alsactl store
+
+echo "[8/9] Setting up systemd service..."
 cat > /tmp/ninja.service << EOF
 [Unit]
 Description=Ninja Desk Companion
@@ -80,7 +86,7 @@ sudo cp /tmp/ninja.service /etc/systemd/system/ninja.service
 sudo systemctl daemon-reload
 sudo systemctl enable ninja.service
 
-echo "[8/8] Setting up port 80 redirect..."
+echo "[9/9] Setting up port 80 redirect..."
 sudo iptables -t nat -C PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 8888 2>/dev/null || \
   sudo iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 8888
 sudo sh -c 'iptables-save > /etc/iptables.rules'
