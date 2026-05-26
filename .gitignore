@@ -1,0 +1,12 @@
+node_modules/
+.pio/
+.vscode/
+*.o
+*.bin
+*.elf
+.DS_Store
+pi/.env
+pi/google-tts-key.json
+pi/data/
+pi/config/local.json
+pi/frames

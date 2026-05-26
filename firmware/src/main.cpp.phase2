@@ -1,0 +1,654 @@
+/*
+ * Little Gamers Ninja — Phase 2 Firmware (LCD + Face)
+ * Board: Waveshare ESP32-S3-Touch-LCD-2.1
+ *
+ * UART to Pi + ST7701S 480x480 round LCD + geometric face expressions
+ */
+
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include <Wire.h>
+
+#define LGFX_USE_V1
+#include <LovyanGFX.hpp>
+#include <lgfx/v1/platforms/esp32s3/Panel_RGB.hpp>
+#include <lgfx/v1/platforms/esp32s3/Bus_RGB.hpp>
+
+// ---------------------------------------------------------------------------
+// Pin definitions
+// ---------------------------------------------------------------------------
+
+// UART to Raspberry Pi
+static constexpr int UART_TX_PIN = 43;
+static constexpr int UART_RX_PIN = 44;
+static constexpr int UART_BAUD   = 115200;
+
+// I2C (shared: TCA9554 + QMI8658)
+static constexpr int I2C_SDA = 15;
+static constexpr int I2C_SCL = 7;
+
+// TCA9554 I2C expander
+static constexpr uint8_t TCA9554_ADDR = 0x20;
+static constexpr uint8_t EXIO_LCD_RST = 0x01;  // bit 0 = EXIO1
+static constexpr uint8_t EXIO_TP_RST  = 0x02;  // bit 1 = EXIO2
+static constexpr uint8_t EXIO_LCD_CS  = 0x04;  // bit 2 = EXIO3
+static constexpr uint8_t EXIO_BUZZER  = 0x80;  // bit 7 = EXIO8
+
+// SPI for ST7701S init
+static constexpr int LCD_SPI_MOSI = 1;
+static constexpr int LCD_SPI_SCK  = 2;
+
+// Backlight
+static constexpr int BL_PIN = 6;
+
+// QMI8658 IMU
+static constexpr uint8_t QMI8658_ADDR = 0x6B;
+
+// ---------------------------------------------------------------------------
+// TCA9554 helpers
+// ---------------------------------------------------------------------------
+static uint8_t tca9554_output_state = 0xFF;
+
+static void tca9554_write(uint8_t val) {
+  tca9554_output_state = val;
+  Wire.beginTransmission(TCA9554_ADDR);
+  Wire.write(0x01); // output register
+  Wire.endTransmission();
+  Wire.beginTransmission(TCA9554_ADDR);
+  Wire.write(0x01);
+  Wire.write(val);
+  Wire.endTransmission();
+}
+
+static void tca9554_init() {
+  // Set all pins as outputs (config register 0x03 = 0x00)
+  Wire.beginTransmission(TCA9554_ADDR);
+  Wire.write(0x03);
+  Wire.write(0x00);
+  Wire.endTransmission();
+
+  // LCD_RST high, LCD_CS high, TP_RST high, buzzer off
+  tca9554_output_state = EXIO_LCD_RST | EXIO_TP_RST | EXIO_LCD_CS;
+  tca9554_write(tca9554_output_state);
+}
+
+static void tca9554_set_bit(uint8_t bit, bool high) {
+  if (high)
+    tca9554_output_state |= bit;
+  else
+    tca9554_output_state &= ~bit;
+  tca9554_write(tca9554_output_state);
+}
+
+// ---------------------------------------------------------------------------
+// ST7701S 9-bit SPI init — bit-banged (hardware SPI can't do 9-bit frames)
+// CS is on TCA9554 expander, SDA=GPIO1, SCK=GPIO2
+// ---------------------------------------------------------------------------
+
+static void spi9_write(bool dc, uint8_t val) {
+  // CS low
+  tca9554_set_bit(EXIO_LCD_CS, false);
+  delayMicroseconds(1);
+
+  // Bit 0: D/C (0=command, 1=data)
+  digitalWrite(LCD_SPI_MOSI, dc ? HIGH : LOW);
+  digitalWrite(LCD_SPI_SCK, LOW);
+  delayMicroseconds(1);
+  digitalWrite(LCD_SPI_SCK, HIGH);
+  delayMicroseconds(1);
+
+  // Bits 1-8: data, MSB first
+  for (int i = 7; i >= 0; i--) {
+    digitalWrite(LCD_SPI_MOSI, (val >> i) & 1 ? HIGH : LOW);
+    digitalWrite(LCD_SPI_SCK, LOW);
+    delayMicroseconds(1);
+    digitalWrite(LCD_SPI_SCK, HIGH);
+    delayMicroseconds(1);
+  }
+
+  // CS high
+  tca9554_set_bit(EXIO_LCD_CS, true);
+  delayMicroseconds(1);
+}
+
+static void lcd_write_cmd(uint8_t cmd) { spi9_write(false, cmd); }
+static void lcd_write_data(uint8_t data) { spi9_write(true, data); }
+
+static void lcd_cmd(uint8_t cmd, const uint8_t *data, size_t len) {
+  lcd_write_cmd(cmd);
+  for (size_t i = 0; i < len; i++) {
+    lcd_write_data(data[i]);
+  }
+}
+
+static void st7701s_init() {
+  // Set up SPI pins for bit-bang
+  pinMode(LCD_SPI_MOSI, OUTPUT);
+  pinMode(LCD_SPI_SCK, OUTPUT);
+  digitalWrite(LCD_SPI_SCK, HIGH);
+
+  // Hardware reset via TCA9554
+  tca9554_set_bit(EXIO_LCD_RST, false);
+  delay(20);
+  tca9554_set_bit(EXIO_LCD_RST, true);
+  delay(150);
+
+  // --- Bank 0 ---
+  { const uint8_t d[] = {0x77,0x01,0x00,0x00,0x10}; lcd_cmd(0xFF, d, sizeof(d)); }
+  { const uint8_t d[] = {0x3B,0x00}; lcd_cmd(0xC0, d, sizeof(d)); }
+  { const uint8_t d[] = {0x0B,0x02}; lcd_cmd(0xC1, d, sizeof(d)); }
+  { const uint8_t d[] = {0x07,0x02}; lcd_cmd(0xC2, d, sizeof(d)); }
+  { const uint8_t d[] = {0x10}; lcd_cmd(0xCC, d, sizeof(d)); }
+  { const uint8_t d[] = {0x08}; lcd_cmd(0xCD, d, sizeof(d)); }
+  // Positive gamma
+  { const uint8_t d[] = {0x00,0x11,0x16,0x0e,0x11,0x06,0x05,0x09,0x08,0x21,0x06,0x13,0x10,0x29,0x31,0x18}; lcd_cmd(0xB0, d, sizeof(d)); }
+  // Negative gamma
+  { const uint8_t d[] = {0x00,0x11,0x16,0x0e,0x11,0x07,0x05,0x09,0x09,0x21,0x05,0x13,0x11,0x2a,0x31,0x18}; lcd_cmd(0xB1, d, sizeof(d)); }
+
+  // --- Bank 1 ---
+  { const uint8_t d[] = {0x77,0x01,0x00,0x00,0x11}; lcd_cmd(0xFF, d, sizeof(d)); }
+  { const uint8_t d[] = {0x6d}; lcd_cmd(0xB0, d, sizeof(d)); }
+  { const uint8_t d[] = {0x37}; lcd_cmd(0xB1, d, sizeof(d)); }
+  { const uint8_t d[] = {0x81}; lcd_cmd(0xB2, d, sizeof(d)); }
+  { const uint8_t d[] = {0x80}; lcd_cmd(0xB3, d, sizeof(d)); }
+  { const uint8_t d[] = {0x43}; lcd_cmd(0xB5, d, sizeof(d)); }
+  { const uint8_t d[] = {0x85}; lcd_cmd(0xB7, d, sizeof(d)); }
+  { const uint8_t d[] = {0x20}; lcd_cmd(0xB8, d, sizeof(d)); }
+  { const uint8_t d[] = {0x78}; lcd_cmd(0xC1, d, sizeof(d)); }
+  { const uint8_t d[] = {0x78}; lcd_cmd(0xC2, d, sizeof(d)); }
+  { const uint8_t d[] = {0x88}; lcd_cmd(0xD0, d, sizeof(d)); }
+  { const uint8_t d[] = {0x00,0x00,0x02}; lcd_cmd(0xE0, d, sizeof(d)); }
+  { const uint8_t d[] = {0x03,0xA0,0x00,0x00,0x04,0xA0,0x00,0x00,0x00,0x20,0x20}; lcd_cmd(0xE1, d, sizeof(d)); }
+  { const uint8_t d[] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}; lcd_cmd(0xE2, d, sizeof(d)); }
+  { const uint8_t d[] = {0x00,0x00,0x11,0x00}; lcd_cmd(0xE3, d, sizeof(d)); }
+  { const uint8_t d[] = {0x22,0x00}; lcd_cmd(0xE4, d, sizeof(d)); }
+  { const uint8_t d[] = {0x05,0xEC,0xA0,0xA0,0x07,0xEE,0xA0,0xA0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}; lcd_cmd(0xE5, d, sizeof(d)); }
+  { const uint8_t d[] = {0x00,0x00,0x11,0x00}; lcd_cmd(0xE6, d, sizeof(d)); }
+  { const uint8_t d[] = {0x22,0x00}; lcd_cmd(0xE7, d, sizeof(d)); }
+  { const uint8_t d[] = {0x06,0xED,0xA0,0xA0,0x08,0xEF,0xA0,0xA0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}; lcd_cmd(0xE8, d, sizeof(d)); }
+  { const uint8_t d[] = {0x00,0x00,0x40,0x40,0x00,0x00,0x00}; lcd_cmd(0xEB, d, sizeof(d)); }
+  { const uint8_t d[] = {0xFF,0xFF,0xFF,0xBA,0x0A,0xBF,0x45,0xFF,0xFF,0x54,0xFB,0xA0,0xAB,0xFF,0xFF,0xFF}; lcd_cmd(0xED, d, sizeof(d)); }
+  { const uint8_t d[] = {0x10,0x0D,0x04,0x08,0x3F,0x1F}; lcd_cmd(0xEF, d, sizeof(d)); }
+
+  // --- Bank 3 ---
+  { const uint8_t d[] = {0x77,0x01,0x00,0x00,0x13}; lcd_cmd(0xFF, d, sizeof(d)); }
+  { const uint8_t d[] = {0x08}; lcd_cmd(0xEF, d, sizeof(d)); }
+
+  // --- Exit banks ---
+  { const uint8_t d[] = {0x77,0x01,0x00,0x00,0x00}; lcd_cmd(0xFF, d, sizeof(d)); }
+  { const uint8_t d[] = {0x00}; lcd_cmd(0x36, d, sizeof(d)); }
+  { const uint8_t d[] = {0x66}; lcd_cmd(0x3A, d, sizeof(d)); } // 18-bit RGB666
+
+  lcd_write_cmd(0x11); // Sleep out
+  delay(480);
+
+  lcd_write_cmd(0x20); // Display inversion off
+  delay(120);
+
+  lcd_write_cmd(0x29); // Display ON
+}
+
+// ---------------------------------------------------------------------------
+// LovyanGFX configuration
+// ---------------------------------------------------------------------------
+
+class LGFX : public lgfx::LGFX_Device {
+public:
+  lgfx::Panel_RGB   _panel_instance;
+  lgfx::Bus_RGB     _bus_instance;
+
+  LGFX() {
+    // Panel config
+    {
+      auto cfg = _panel_instance.config();
+      cfg.memory_width  = 480;
+      cfg.memory_height = 480;
+      cfg.panel_width   = 480;
+      cfg.panel_height  = 480;
+      cfg.offset_x      = 0;
+      cfg.offset_y      = 0;
+      _panel_instance.config(cfg);
+    }
+
+    // PSRAM config
+    {
+      auto cfg = _panel_instance.config_detail();
+      cfg.use_psram = 1;
+      _panel_instance.config_detail(cfg);
+    }
+
+    // Bus_RGB config
+    {
+      auto cfg = _bus_instance.config();
+      cfg.panel = &_panel_instance;
+      cfg.pin_d0  = GPIO_NUM_5;   // B0
+      cfg.pin_d1  = GPIO_NUM_45;  // B1
+      cfg.pin_d2  = GPIO_NUM_48;  // B2
+      cfg.pin_d3  = GPIO_NUM_47;  // B3
+      cfg.pin_d4  = GPIO_NUM_21;  // B4
+      cfg.pin_d5  = GPIO_NUM_14;  // G0
+      cfg.pin_d6  = GPIO_NUM_13;  // G1
+      cfg.pin_d7  = GPIO_NUM_12;  // G2
+      cfg.pin_d8  = GPIO_NUM_11;  // G3
+      cfg.pin_d9  = GPIO_NUM_10;  // G4
+      cfg.pin_d10 = GPIO_NUM_9;   // G5
+      cfg.pin_d11 = GPIO_NUM_46;  // R0
+      cfg.pin_d12 = GPIO_NUM_3;   // R1
+      cfg.pin_d13 = GPIO_NUM_8;   // R2
+      cfg.pin_d14 = GPIO_NUM_18;  // R3
+      cfg.pin_d15 = GPIO_NUM_17;  // R4
+
+      cfg.pin_henable = GPIO_NUM_40;  // DE
+      cfg.pin_vsync   = GPIO_NUM_39;
+      cfg.pin_hsync   = GPIO_NUM_38;
+      cfg.pin_pclk    = GPIO_NUM_41;
+
+      cfg.freq_write = 16000000; // 16 MHz PCLK
+
+      cfg.hsync_polarity    = 0;
+      cfg.hsync_front_porch = 50;
+      cfg.hsync_pulse_width = 8;
+      cfg.hsync_back_porch  = 10;
+
+      cfg.vsync_polarity    = 0;
+      cfg.vsync_front_porch = 8;
+      cfg.vsync_pulse_width = 3;
+      cfg.vsync_back_porch  = 8;
+
+      cfg.pclk_active_neg   = 1;
+      cfg.de_idle_high      = 0;
+      cfg.pclk_idle_high    = 0;
+
+      _bus_instance.config(cfg);
+    }
+    _panel_instance.setBus(&_bus_instance);
+
+    setPanel(&_panel_instance);
+  }
+};
+
+static LGFX lcd;
+
+// ---------------------------------------------------------------------------
+// QMI8658 IMU
+// ---------------------------------------------------------------------------
+
+static bool qmi8658_detected = false;
+
+static bool qmi8658_init() {
+  Wire.beginTransmission(QMI8658_ADDR);
+  Wire.write(0x00); // WHO_AM_I register
+  if (Wire.endTransmission() != 0) return false;
+
+  Wire.requestFrom(QMI8658_ADDR, (uint8_t)1);
+  if (!Wire.available()) return false;
+  uint8_t who = Wire.read();
+  Serial.printf("[IMU] QMI8658 WHO_AM_I = 0x%02X\n", who);
+  if (who != 0x05) return false;
+
+  // Reset
+  Wire.beginTransmission(QMI8658_ADDR);
+  Wire.write(0x60); // RESET register
+  Wire.write(0x01);
+  Wire.endTransmission();
+  delay(20);
+
+  // Enable accel: ODR = 128 Hz, +/- 4g
+  Wire.beginTransmission(QMI8658_ADDR);
+  Wire.write(0x03); // CTRL2 — accel config
+  Wire.write(0x15); // ODR 128Hz, +/-4g
+  Wire.endTransmission();
+
+  // Enable accel in CTRL7
+  Wire.beginTransmission(QMI8658_ADDR);
+  Wire.write(0x08); // CTRL7
+  Wire.write(0x01); // accel enable
+  Wire.endTransmission();
+
+  return true;
+}
+
+static void qmi8658_read_accel(float &ax, float &ay, float &az) {
+  Wire.beginTransmission(QMI8658_ADDR);
+  Wire.write(0x35); // AX_L
+  Wire.endTransmission(false);
+  Wire.requestFrom(QMI8658_ADDR, (uint8_t)6);
+  int16_t raw_x = Wire.read() | (Wire.read() << 8);
+  int16_t raw_y = Wire.read() | (Wire.read() << 8);
+  int16_t raw_z = Wire.read() | (Wire.read() << 8);
+  // +/- 4g => 8192 LSB/g
+  ax = raw_x / 8192.0f;
+  ay = raw_y / 8192.0f;
+  az = raw_z / 8192.0f;
+}
+
+// ---------------------------------------------------------------------------
+// Face state machine
+// ---------------------------------------------------------------------------
+
+enum FaceState {
+  FACE_IDLE,
+  FACE_HAPPY,
+  FACE_SAD,
+  FACE_SURPRISED,
+  FACE_CONFUSED,
+  FACE_SLEEPING,
+  FACE_FOCUSED,
+  FACE_TALKING
+};
+
+static FaceState currentFace = FACE_IDLE;
+static bool faceNeedsRedraw = true;
+static unsigned long lastTalkToggle = 0;
+static bool talkMouthOpen = false;
+
+static FaceState parseFaceState(const char *s) {
+  if (strcmp(s, "idle") == 0)      return FACE_IDLE;
+  if (strcmp(s, "happy") == 0)     return FACE_HAPPY;
+  if (strcmp(s, "sad") == 0)       return FACE_SAD;
+  if (strcmp(s, "surprised") == 0) return FACE_SURPRISED;
+  if (strcmp(s, "confused") == 0)  return FACE_CONFUSED;
+  if (strcmp(s, "sleeping") == 0)  return FACE_SLEEPING;
+  if (strcmp(s, "focused") == 0)   return FACE_FOCUSED;
+  if (strcmp(s, "talking") == 0)   return FACE_TALKING;
+  return FACE_IDLE;
+}
+
+static const char* faceStateName(FaceState s) {
+  switch (s) {
+    case FACE_IDLE:      return "idle";
+    case FACE_HAPPY:     return "happy";
+    case FACE_SAD:       return "sad";
+    case FACE_SURPRISED: return "surprised";
+    case FACE_CONFUSED:  return "confused";
+    case FACE_SLEEPING:  return "sleeping";
+    case FACE_FOCUSED:   return "focused";
+    case FACE_TALKING:   return "talking";
+    default:             return "unknown";
+  }
+}
+
+// Center of display
+static constexpr int CX = 240;
+static constexpr int CY = 240;
+
+// Eye positions
+static constexpr int LEFT_EYE_X  = CX - 80;
+static constexpr int RIGHT_EYE_X = CX + 80;
+static constexpr int EYE_Y       = CY - 50;
+
+// Mouth position
+static constexpr int MOUTH_Y = CY + 70;
+
+static void drawFace(FaceState state) {
+  lcd.fillScreen(TFT_BLACK);
+
+  switch (state) {
+    case FACE_IDLE:
+      // Two open eyes (white circles)
+      lcd.fillCircle(LEFT_EYE_X, EYE_Y, 25, TFT_WHITE);
+      lcd.fillCircle(RIGHT_EYE_X, EYE_Y, 25, TFT_WHITE);
+      // Neutral mouth (straight line)
+      lcd.fillRect(CX - 50, MOUTH_Y - 3, 100, 6, TFT_WHITE);
+      break;
+
+    case FACE_HAPPY:
+      // Two open eyes
+      lcd.fillCircle(LEFT_EYE_X, EYE_Y, 25, TFT_WHITE);
+      lcd.fillCircle(RIGHT_EYE_X, EYE_Y, 25, TFT_WHITE);
+      // Smile (upward arc) — draw arc via thick line segments
+      for (int i = -50; i <= 50; i++) {
+        float t = (float)i / 50.0f;
+        int y = MOUTH_Y - (int)(25.0f * (1.0f - t * t));
+        lcd.fillCircle(CX + i, y, 3, TFT_WHITE);
+      }
+      break;
+
+    case FACE_SAD:
+      // Two open eyes
+      lcd.fillCircle(LEFT_EYE_X, EYE_Y, 25, TFT_WHITE);
+      lcd.fillCircle(RIGHT_EYE_X, EYE_Y, 25, TFT_WHITE);
+      // Frown (downward arc)
+      for (int i = -50; i <= 50; i++) {
+        float t = (float)i / 50.0f;
+        int y = MOUTH_Y + (int)(25.0f * (1.0f - t * t));
+        lcd.fillCircle(CX + i, y, 3, TFT_WHITE);
+      }
+      break;
+
+    case FACE_SURPRISED:
+      // Two large eyes
+      lcd.fillCircle(LEFT_EYE_X, EYE_Y, 40, TFT_WHITE);
+      lcd.fillCircle(RIGHT_EYE_X, EYE_Y, 40, TFT_WHITE);
+      // Small O mouth
+      lcd.drawCircle(CX, MOUTH_Y, 20, TFT_WHITE);
+      lcd.drawCircle(CX, MOUTH_Y, 19, TFT_WHITE);
+      lcd.drawCircle(CX, MOUTH_Y, 18, TFT_WHITE);
+      break;
+
+    case FACE_CONFUSED:
+      // One eye up, one eye down
+      lcd.fillCircle(LEFT_EYE_X, EYE_Y - 15, 25, TFT_WHITE);
+      lcd.fillCircle(RIGHT_EYE_X, EYE_Y + 15, 25, TFT_WHITE);
+      // Squiggly mouth (sine wave)
+      for (int i = -50; i <= 50; i++) {
+        float t = (float)i / 50.0f;
+        int y = MOUTH_Y + (int)(12.0f * sinf(t * 3.14159f * 3.0f));
+        lcd.fillCircle(CX + i, y, 3, TFT_WHITE);
+      }
+      break;
+
+    case FACE_SLEEPING:
+      // Two closed eyes (horizontal lines)
+      lcd.fillRect(LEFT_EYE_X - 30, EYE_Y - 3, 60, 6, TFT_WHITE);
+      lcd.fillRect(RIGHT_EYE_X - 30, EYE_Y - 3, 60, 6, TFT_WHITE);
+      // No mouth
+      break;
+
+    case FACE_FOCUSED:
+      // Two narrow eyes (thin rectangles)
+      lcd.fillRect(LEFT_EYE_X - 30, EYE_Y - 6, 60, 12, TFT_WHITE);
+      lcd.fillRect(RIGHT_EYE_X - 30, EYE_Y - 6, 60, 12, TFT_WHITE);
+      // No mouth
+      break;
+
+    case FACE_TALKING:
+      // Two open eyes
+      lcd.fillCircle(LEFT_EYE_X, EYE_Y, 25, TFT_WHITE);
+      lcd.fillCircle(RIGHT_EYE_X, EYE_Y, 25, TFT_WHITE);
+      // Open mouth (circle that toggles size)
+      {
+        int r = talkMouthOpen ? 25 : 12;
+        lcd.fillCircle(CX, MOUTH_Y, r, TFT_WHITE);
+        lcd.fillCircle(CX, MOUTH_Y, r - 4, TFT_BLACK);
+      }
+      break;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// UART messaging
+// ---------------------------------------------------------------------------
+
+String uartBuffer = "";
+
+void uartSend(JsonDocument &doc) {
+  String line;
+  serializeJson(doc, line);
+  Serial0.println(line);
+  Serial.printf("[UART TX] %s\n", line.c_str());
+}
+
+void handleUartMessage(const String &line) {
+  Serial.printf("[UART RX] %s\n", line.c_str());
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, line);
+  if (err) {
+    Serial.printf("[UART] JSON parse error: %s\n", err.c_str());
+    return;
+  }
+
+  const char *cmd = doc["cmd"];
+  if (!cmd) {
+    Serial.println("[UART] Missing 'cmd' field");
+    return;
+  }
+
+  if (strcmp(cmd, "ping") == 0) {
+    JsonDocument reply;
+    reply["event"] = "pong";
+    uartSend(reply);
+
+  } else if (strcmp(cmd, "face") == 0) {
+    const char *state = doc["state"] | "idle";
+    Serial.printf("[FACE] State: %s\n", state);
+
+    FaceState newFace = parseFaceState(state);
+    if (newFace != currentFace) {
+      currentFace = newFace;
+      faceNeedsRedraw = true;
+    }
+
+    // Reply with acknowledgment
+    JsonDocument reply;
+    reply["event"] = "face_ack";
+    reply["state"] = state;
+    uartSend(reply);
+
+  } else {
+    Serial.printf("[UART] Unknown cmd: %s\n", cmd);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Setup
+// ---------------------------------------------------------------------------
+
+void setup() {
+  // USB CDC serial for debug
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("\n========================================");
+  Serial.println("  Little Gamers Ninja — Phase 2 (LCD)");
+  Serial.println("  Waveshare ESP32-S3-Touch-LCD-2.1");
+  Serial.println("========================================\n");
+
+  // --- I2C init (shared bus for TCA9554 + QMI8658) ---
+  Wire.begin(I2C_SDA, I2C_SCL);
+  Wire.setClock(400000);
+  Serial.printf("[I2C] SDA=%d SCL=%d @ 400kHz\n", I2C_SDA, I2C_SCL);
+
+  // --- TCA9554 init ---
+  tca9554_init();
+  Serial.println("[TCA9554] Expander initialized");
+
+  // --- ST7701S SPI init ---
+  Serial.println("[LCD] ST7701S SPI init...");
+  st7701s_init();
+  Serial.println("[LCD] ST7701S init complete");
+
+  // --- Backlight via PWM ---
+  ledcSetup(0, 20000, 10);         // channel 0, 20kHz, 10-bit
+  ledcAttachPin(BL_PIN, 0);        // pin 6 -> channel 0
+  ledcWrite(0, 1024);              // full brightness
+  Serial.println("[LCD] Backlight ON (PWM)");
+
+  // --- LovyanGFX init ---
+  lcd.init();
+  lcd.fillScreen(TFT_BLACK);
+  Serial.println("[LCD] LovyanGFX initialized (480x480)");
+
+  // --- QMI8658 IMU ---
+  qmi8658_detected = qmi8658_init();
+  Serial.printf("[IMU] QMI8658: %s\n", qmi8658_detected ? "OK" : "not found");
+
+  // --- UART to Pi ---
+  Serial0.begin(UART_BAUD);
+  Serial.printf("[UART] Serial0 TX=%d RX=%d @ %d baud\n",
+                UART_TX_PIN, UART_RX_PIN, UART_BAUD);
+
+  // Send boot event
+  JsonDocument hello;
+  hello["event"] = "boot";
+  hello["version"] = "phase2-lcd";
+  hello["lcd"] = true;
+  hello["imu"] = qmi8658_detected;
+  uartSend(hello);
+
+  // Draw initial face
+  faceNeedsRedraw = true;
+
+  Serial.println("[INIT] Ready — waiting for UART commands\n");
+}
+
+// ---------------------------------------------------------------------------
+// Loop
+// ---------------------------------------------------------------------------
+
+void loop() {
+  // --- UART receive ---
+  while (Serial0.available()) {
+    char c = Serial0.read();
+    if (c == '\n') {
+      uartBuffer.trim();
+      if (uartBuffer.length() > 0) {
+        handleUartMessage(uartBuffer);
+      }
+      uartBuffer = "";
+    } else if (c != '\r') {
+      uartBuffer += c;
+    }
+  }
+
+  // --- Face drawing ---
+  if (faceNeedsRedraw) {
+    drawFace(currentFace);
+    faceNeedsRedraw = false;
+    Serial.printf("[FACE] Drew: %s\n", faceStateName(currentFace));
+  }
+
+  // Talking animation: toggle mouth every 200ms
+  if (currentFace == FACE_TALKING && millis() - lastTalkToggle >= 200) {
+    lastTalkToggle = millis();
+    talkMouthOpen = !talkMouthOpen;
+    drawFace(FACE_TALKING);
+  }
+
+  // --- IMU read every 100ms ---
+  if (qmi8658_detected) {
+    static unsigned long lastImu = 0;
+    static float prevMag = 1.0f;
+    if (millis() - lastImu >= 100) {
+      lastImu = millis();
+      float ax, ay, az;
+      qmi8658_read_accel(ax, ay, az);
+      float mag = sqrtf(ax*ax + ay*ay + az*az);
+      float delta = fabsf(mag - prevMag);
+      prevMag = mag;
+
+      // Send motion event if significant movement detected
+      if (delta > 0.3f) {
+        JsonDocument motion;
+        motion["event"] = "motion";
+        motion["ax"] = serialized(String(ax, 2));
+        motion["ay"] = serialized(String(ay, 2));
+        motion["az"] = serialized(String(az, 2));
+        uartSend(motion);
+      }
+    }
+  }
+
+  // --- Heartbeat every 5 seconds ---
+  static unsigned long lastHeartbeat = 0;
+  if (millis() - lastHeartbeat >= 5000) {
+    lastHeartbeat = millis();
+    JsonDocument hb;
+    hb["event"] = "heartbeat";
+    hb["uptime_ms"] = millis();
+    hb["face"] = faceStateName(currentFace);
+    uartSend(hb);
+  }
+
+  delay(1);
+}
