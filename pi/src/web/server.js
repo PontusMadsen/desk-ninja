@@ -72,6 +72,17 @@ export function startWebServer(state) {
     }
   });
 
+  // Restore saved volume on startup
+  try {
+    const savedVol = JSON.parse(readFileSync(join(PI_ROOT, 'data/volume.json'), 'utf-8'));
+    if (savedVol.volume != null) {
+      try { execSync(`amixer -c UACDemoV10 set PCM ${savedVol.volume}%`); } catch {
+        try { execSync(`amixer -c 0 set Speaker ${savedVol.volume}%`); } catch {}
+      }
+      logger.info({ volume: savedVol.volume }, 'Volume restored');
+    }
+  } catch {}
+
   app.post('/api/volume', (req, res) => {
     const { volume } = req.body;
     if (volume == null || volume < 0 || volume > 100) return res.status(400).json({ error: 'Invalid volume' });
@@ -80,6 +91,8 @@ export function startWebServer(state) {
       try { execSync(`amixer -c UACDemoV10 set PCM ${volume}%`); } catch {
         execSync(`amixer -c 0 set Speaker ${volume}%`);
       }
+      // Save for next boot
+      writeFileSync(join(PI_ROOT, 'data/volume.json'), JSON.stringify({ volume }));
       // Play volume feedback with TTS voice
       (async () => {
         try {
@@ -258,7 +271,7 @@ export function startWebServer(state) {
       const { synthesize } = await import('../tts/voicevox.js');
       const { playFile } = await import('../audio/playback.js');
       const audioDevice = process.env.AUDIO_DEVICE || 'plughw:UACDemoV10,0';
-      const file = await synthesize('Testing speaker');
+      const file = await synthesize('I give you happy poopy time');
       if (file) await playFile(file, audioDevice);
       res.json({ ok: true });
     } catch (e) {
@@ -301,9 +314,9 @@ export function startWebServer(state) {
   });
 
   app.post('/api/tasks', (req, res) => {
-    const { text, deadline, workspace, priority, date } = req.body;
+    const { text, deadline, workspace, priority, date, repeat } = req.body;
     if (!text) return res.status(400).json({ error: 'Missing text' });
-    const task = addTask(text, deadline || null, workspace || 'default', priority || 2, date || null);
+    const task = addTask(text, deadline || null, workspace || 'default', priority || 2, date || null, repeat || null);
     if (ninjaState.setFace) {
       ninjaState.setFace('focused');
       setTimeout(() => ninjaState.setFace('idle'), 1000);
@@ -327,6 +340,16 @@ export function startWebServer(state) {
   app.delete('/api/tasks/:id', (req, res) => {
     const ok = deleteTask(req.params.id);
     if (!ok) return res.status(404).json({ error: 'Not found' });
+    res.json({ ok: true });
+  });
+
+  app.post('/api/tasks/reorder', (req, res) => {
+    const { ids } = req.body;
+    if (!ids || !Array.isArray(ids)) return res.status(400).json({ error: 'Missing ids' });
+    const tasks = getTasks();
+    const reordered = ids.map(id => tasks.find(t => t.id === id)).filter(Boolean);
+    tasks.forEach(t => { if (!ids.includes(t.id)) reordered.push(t); });
+    writeFileSync(join(PI_ROOT, 'data/tasks.json'), JSON.stringify(reordered, null, 2));
     res.json({ ok: true });
   });
 
@@ -374,6 +397,16 @@ export function startWebServer(state) {
   app.delete('/api/habits/:id', (req, res) => {
     const ok = deleteHabit(req.params.id);
     if (!ok) return res.status(404).json({ error: 'Not found' });
+    res.json({ ok: true });
+  });
+
+  app.post('/api/habits/reorder', (req, res) => {
+    const { ids } = req.body;
+    if (!ids || !Array.isArray(ids)) return res.status(400).json({ error: 'Missing ids' });
+    const habits = getHabits();
+    const reordered = ids.map(id => habits.find(h => h.id === id)).filter(Boolean);
+    habits.forEach(h => { if (!ids.includes(h.id)) reordered.push(h); });
+    writeFileSync(join(PI_ROOT, 'data/habits.json'), JSON.stringify(reordered, null, 2));
     res.json({ ok: true });
   });
 

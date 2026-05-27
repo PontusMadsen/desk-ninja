@@ -30,21 +30,54 @@ export function getTasks() {
   return loadTasks();
 }
 
-// Move uncompleted tasks from past days to today
+// Move uncompleted tasks from past days to today + recreate recurring tasks
 function carryOverTasks() {
   const tasks = loadTasks();
   const t = today();
   let changed = false;
+  const newTasks = [];
+
   for (const task of tasks) {
+    // Carry over uncompleted tasks
     if (!task.done && task.date && task.date < t) {
       task.date = t;
       changed = true;
     }
+    // Recreate recurring tasks for today
+    if (task.repeat && task.done && task.date && task.date < t) {
+      const dow = new Date().getDay(); // 0=Sun
+      const shouldCreate =
+        task.repeat === 'daily' ||
+        (task.repeat === 'weekdays' && dow >= 1 && dow <= 5) ||
+        (task.repeat === 'weekly' && new Date(task.date).getDay() === dow);
+
+      if (shouldCreate) {
+        // Check if we already created today's instance
+        const exists = tasks.some(tt => tt.text === task.text && tt.date === t && !tt.done);
+        if (!exists) {
+          newTasks.push({
+            id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+            text: task.text,
+            done: false,
+            workspace: task.workspace,
+            deadline: null,
+            priority: task.priority,
+            date: t,
+            repeat: task.repeat,
+            createdAt: Date.now(),
+            completedAt: null,
+          });
+          changed = true;
+        }
+      }
+    }
   }
+
+  if (newTasks.length > 0) tasks.push(...newTasks);
   if (changed) saveTasks(tasks);
 }
 
-export function addTask(text, deadline = null, workspace = 'default', priority = 2, date = null) {
+export function addTask(text, deadline = null, workspace = 'default', priority = 2, date = null, repeat = null) {
   const tasks = loadTasks();
   const task = {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
@@ -54,6 +87,7 @@ export function addTask(text, deadline = null, workspace = 'default', priority =
     deadline,
     priority,
     date: date || today(),
+    repeat, // null, 'daily', 'weekdays', 'weekly'
     createdAt: Date.now(),
     completedAt: null,
   };

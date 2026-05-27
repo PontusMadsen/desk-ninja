@@ -27,11 +27,28 @@ THRESHOLD = 0.8
 COOLDOWN_SEC = 10
 
 def main():
-    sys.stderr.write("[WAKE] Loading Hey Cookie model...\n")
+    models_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'models')
+    verifier = os.path.join(models_dir, 'hey_ninja_verifier')
+    custom_model = os.path.join(models_dir, 'hey_cookie.onnx')
+
+    # Use hey_ninja (hey_jarvis base + verifier) if available, else fall back to hey_cookie
+    # Check for custom wake word model, or use hey_jarvis as "Hey Ninja" proxy
+    wake_word = os.environ.get('WAKE_WORD', 'hey_cookie')
+    wake_model = os.path.join(models_dir, f'{wake_word}.onnx')
+    if not os.path.exists(wake_model):
+        wake_model = custom_model  # fallback to hey_cookie
+        wake_word = 'hey_cookie'
+
+    sys.stderr.write(f"[WAKE] Loading {wake_word} model...\n")
     sys.stderr.flush()
-    custom_model = os.path.join(os.path.dirname(__file__), '..', '..', 'models', 'hey_cookie.onnx')
-    model = Model(wakeword_model_paths=[custom_model])
-    sys.stderr.write("[WAKE] Model loaded. Listening for 'Hey Cookie'...\n")
+    model = Model(wakeword_model_paths=[wake_model])
+    target_model = wake_word
+    threshold = THRESHOLD
+
+    sys.stderr.write(f"[WAKE] Listening for '{wake_word}' (threshold: {threshold})\n")
+    sys.stderr.flush()
+
+    sys.stderr.write(f"[WAKE] Model loaded. Listening for wake word...\n")
     sys.stderr.flush()
 
     paused = False
@@ -80,8 +97,9 @@ def main():
                 for i in range(0, len(data) - CHUNK_SAMPLES, CHUNK_SAMPLES):
                     model.predict(data[i:i+CHUNK_SAMPLES])
                     for name, scores in model.prediction_buffer.items():
+                        if name != target_model: continue
                         score = scores[-1]
-                        if score > THRESHOLD:
+                        if score > threshold:
                             now = time.time()
                             if now - last_detection > COOLDOWN_SEC:
                                 last_detection = now
@@ -116,8 +134,9 @@ def main():
                     model.predict(left_16)
 
                     for name, scores in model.prediction_buffer.items():
+                        if name != target_model: continue
                         score = scores[-1]
-                        if score > THRESHOLD:
+                        if score > threshold:
                             now = time.time()
                             if now - last_detection > COOLDOWN_SEC:
                                 last_detection = now
