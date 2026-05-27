@@ -1,133 +1,131 @@
-# Little Gamers Ninja — Desk Companion
+# Desk Ninja
 
-A desktop companion shaped like a ninja from the [Little Gamers](https://www.littlegamers.com) webcomic by Pontus Madsen. Round 480x480 LCD face on a Waveshare ESP32-S3, brain on a Raspberry Pi 4, connected over a single UART cable.
+A desk companion with an animated face, voice interaction, and productivity tools. Built on a Raspberry Pi Zero 2 W with a tiny OLED screen, microphone, and speaker.
 
-Say **"Hey Cookie"** and it listens, thinks, and talks back — in English with a Japanese accent.
+Say **"Hey Ninja"** and the ninja wakes up, listens, thinks, and responds — with a grumpy Japanese-accented personality and 37 animated face expressions.
 
-## What it does
+## Features
 
-- **Animated eyes** on a 2.1" round IPS display — blinking, expressions, idle behaviors
-- **Wake word** detection ("Hey Cookie") via openwakeword
-- **Voice conversation** — Groq Whisper STT → Claude Haiku → Google Cloud TTS (Japanese accent)
-- **9 expressions** — idle, happy, sad, angry, surprised, sleeping, confused, focused, scared
-- **Idle behaviors** — looks around, gets drowsy, falls asleep after 5 minutes
-- **Personality** — laconic, grumpy, secretly fond of you
+**Voice Companion**
+- Custom wake word detection ("Hey Ninja")
+- Speech-to-text via Groq Whisper
+- AI personality via Claude Haiku (grumpy ninja, English with Japanese accent)
+- Text-to-speech via Google Cloud TTS (Japanese voice)
+- Conversation mode — follow-up questions without repeating the wake word
+
+**Animated Face**
+- 37 animated expressions on a 128x64 OLED display
+- Reacts to tasks, habits, voice, and idle time
+- Sleepy phase before falling asleep
+- Random fun animations while idle (sakura, rain, bee, music...)
+- Angry reactions when you insult it
+
+**Productivity Web App** (http://ninja.local)
+- Task management with priorities, recurring tasks, and drag-and-drop sorting
+- Pomodoro focus timer linked to tasks
+- Habit tracking with 7-day streaks
+- Focus insights and weekly stats
+- Chat with the ninja from your browser
+- Daily summary (grumpy recap of your day)
+- Settings panel with volume, personality, TTS voice, API keys
+- OTA updates from the web UI
+- Desktop app (Tauri) available
 
 ## Hardware
 
-| Component | Role |
-|-----------|------|
-| Raspberry Pi 4 (4GB) | Brain — wake word, STT, LLM, TTS |
-| Waveshare ESP32-S3-Touch-LCD-2.1 | Face — 480x480 round LCD, IMU, touch |
-| INMP441 I2S MEMS mic | Listening (wired to Pi I2S) |
-| USB speaker (or headphone jack) | Talking |
+**Required:**
+- Raspberry Pi Zero 2 W
+- ReSpeaker 2-Mic HAT (or compatible I2S audio HAT)
+- SH1106 128x64 I2C OLED display (connected via HAT's I2C Grove connector)
+- Small speaker (wired to HAT speaker header)
+- Micro SD card (4GB+)
 
-Single 4-wire cable between Pi and ESP32 carries power + UART. See [hardware/wiring.md](hardware/wiring.md) for pin connections.
+**OLED Wiring (Grove I2C connector):**
+| Grove wire | OLED pin |
+|-----------|----------|
+| Green | GND |
+| Yellow | VCC |
+| Black | SCL |
+| Red | SDA |
 
-## Architecture
-
-```
-Pi 4 (brain)                    ESP32-S3 (face)
-┌──────────────┐    UART JSON    ┌──────────────┐
-│ Node.js      │◄──────────────►│ Arduino C++  │
-│  orchestrator│    115200 8N1   │  face renderer│
-│  wake word   │                 │  IMU/sensors  │
-│  STT (Groq)  │                 │  480x480 LCD  │
-│  LLM (Claude)│                 │  buzzer       │
-│  TTS (Google)│                 └──────────────┘
-│  reactions   │                   ▲ powered via
-│  idle behav. │                   │ 5V from Pi
-└──────────────┘                   │
-     │ I2S                         │
-  INMP441 mic              4-wire cable
-```
+*Note: These colors are for the KEYESTUDIO ReSpeaker HAT. Your wiring may differ — use `i2cdetect -y 1` to verify the OLED appears at address 0x3c.*
 
 ## Quick Start
 
-### 1. Flash the ESP32
+### 1. Flash Raspberry Pi OS
+Use Raspberry Pi Imager to flash **Raspberry Pi OS** to your SD card. In settings:
+- Set hostname (e.g., `ninja`)
+- Enable SSH
+- Configure WiFi
 
+### 2. Connect Hardware
+- Mount ReSpeaker HAT on the Pi
+- Connect OLED to the HAT's I2C Grove connector
+- Wire speaker to the HAT's speaker header
+
+### 3. Install
 ```bash
-cd firmware
-pio run -t upload --upload-port /dev/cu.usbmodemXXXXX
+git clone https://github.com/PontusMadsen/desk-ninja.git
+cd desk-ninja
+chmod +x setup.sh
+./setup.sh
+sudo reboot
 ```
 
-Requires PlatformIO. Hold BOOT, press RESET, release BOOT to enter flash mode.
+### 4. Setup
+Open `http://ninja.local` in your browser and follow the setup wizard:
+1. Enter API keys (Groq, Anthropic)
+2. Optionally add Google Cloud TTS key
+3. Test speaker and microphone
+4. Done!
 
-### 2. Set up the Pi
+### 5. Talk to it
+- Say **"Hey Ninja"** and wait for the face to react (surprised face)
+- Then ask your question
+- The ninja thinks (squint face) and responds with voice + face animation
 
-```bash
-# Install Node.js dependencies
-cd pi && npm install
+## Usage Tips
 
-# Create .env with your API keys
-cp .env.example .env
-# Edit .env with your GROQ_API_KEY and ANTHROPIC_API_KEY
+- **Wake word:** Say "Hey Ninja", wait for the surprised face, then speak
+- **Conversation mode:** After the ninja responds, just keep talking — no need to say the wake word again for follow-up questions
+- **Insult it:** Say something mean and watch the angry animation play
+- **Web UI:** Access tasks, habits, focus timer, and settings at `http://ninja.local`
+- **Desktop app:** Tauri-based native macOS app available (see releases)
 
-# Install the systemd service
-sudo bash scripts/install-service.sh
-sudo systemctl start ninja
-```
+## API Keys
 
-### 3. Talk to it
+| Service | Purpose | Get a key |
+|---------|---------|-----------|
+| [Groq](https://console.groq.com) | Speech-to-text (Whisper) | Free tier available |
+| [Anthropic](https://console.anthropic.com) | AI personality (Claude Haiku) | Pay-as-you-go |
+| [Google Cloud](https://console.cloud.google.com) | Text-to-speech (optional) | Free tier: 1M chars/month |
 
-Say **"Hey Cookie"** and speak. The ninja listens for 4 seconds, then responds.
+Without Google Cloud TTS, the ninja falls back to Piper (local, English-only).
 
-## Project Structure
+## Known Issues
 
-```
-little-gamers-ninja/
-├── firmware/          # ESP32-S3 PlatformIO project
-│   └── src/main.cpp   # LCD, UART, face renderer, IMU, sensors
-├── pi/                # Raspberry Pi Node.js service
-│   ├── src/
-│   │   ├── orchestrator.js      # Main service
-│   │   ├── transport/serial.js  # UART communication
-│   │   ├── wakeword/            # openwakeword (Python subprocess)
-│   │   ├── stt/groq.js          # Groq Whisper speech-to-text
-│   │   ├── llm/claude.js        # Claude Haiku conversation
-│   │   ├── tts/voicevox.js      # Google Cloud TTS (Piper fallback)
-│   │   ├── audio/               # Record + playback
-│   │   ├── reactions.js         # Sensor → face reactions
-│   │   ├── idle-behaviors.js    # Random idle face animations
-│   │   └── personality/         # Ninja character prompt
-│   ├── config/
-│   │   ├── default.json         # Settings
-│   │   └── reactions.json       # Configurable reaction rules
-│   ├── models/
-│   │   └── hey_cookie.onnx      # Custom wake word model
-│   └── systemd/ninja.service    # Auto-start on boot
-├── hardware/
-│   ├── wiring.md                # Current pin connections
-│   └── bom.md                   # Bill of materials
-└── docs/
-    ├── architecture.md          # Design decisions
-    └── protocol.md              # UART JSON protocol spec
-```
+- **Latency:** The Pi Zero 2 W is slower than a Pi 4. Expect 3-5 seconds between speaking and getting a response.
+- **Wake word timing:** Say "Hey Ninja" and wait for the face to change before speaking your question. The ninja can't hear you while the wake word is being processed.
+- **OLED framerate:** ~5fps due to I2C speed limitations. Animations are smooth enough but not buttery.
 
-## UART Protocol
+## 3D Printable Case
 
-Pi → ESP32 (commands):
-```json
-{"cmd":"face","state":"happy"}
-{"cmd":"ping"}
-{"cmd":"set_time","unix":1716200000}
-```
+*Coming soon — STL files for a ninja-shaped enclosure.*
 
-ESP32 → Pi (events):
-```json
-{"event":"heartbeat","uptime_ms":5000,"face":"idle"}
-{"event":"tilt","direction":"left","angle":45}
-{"event":"pong"}
-```
+## Face Credits
 
-See [docs/protocol.md](docs/protocol.md) for the full spec.
+Face animations are based on work from [The Mochi](https://www.themochi.huykhong.com/) which were originally created by Dasai Mochi. Adapted and converted for OLED display.
 
-## API Keys Required
+## Updating
 
-- **GROQ_API_KEY** — free tier at [console.groq.com](https://console.groq.com)
-- **ANTHROPIC_API_KEY** — from [console.anthropic.com](https://console.anthropic.com)
-- **Google Cloud TTS** — service account JSON key with Text-to-Speech API enabled
+Click **"Check for Updates"** in the web UI settings panel. If updates are available, click **"Install Update"** — it pulls from GitHub and restarts automatically.
 
 ## License
 
-Personal project. Not open source yet.
+MIT
+
+## Credits
+
+- Ninja character from [Little Gamers](https://www.littlegamers.com) by Pontus Madsen
+- Face animations based on [Dasai Mochi](https://www.themochi.huykhong.com/)
+- Built with Claude, Groq, Google Cloud, openwakeword, luma.oled
