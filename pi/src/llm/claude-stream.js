@@ -30,7 +30,14 @@ function loadPrompt() {
 }
 
 const conversationHistory = [];
-const MAX_HISTORY = 5;
+const MAX_HISTORY = 3; // keep last 3 exchanges (6 messages) for speed
+
+// Reuse client instance
+let client = null;
+function getClient() {
+  if (!client) client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+  return client;
+}
 
 /**
  * Stream Claude response sentence by sentence.
@@ -45,14 +52,13 @@ export async function respondStreaming(userText, onSentence) {
 
   try {
     const startTime = Date.now();
-    const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
     conversationHistory.push({ role: 'user', content: userText });
     if (conversationHistory.length > MAX_HISTORY * 2) {
       conversationHistory.splice(0, 2);
     }
 
-    const stream = client.messages.stream({
+    const stream = getClient().messages.stream({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 200,
       system: loadPrompt(),

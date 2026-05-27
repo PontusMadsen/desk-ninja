@@ -30,10 +30,8 @@ const AUDIO_DEVICE = process.env.AUDIO_DEVICE || 'plughw:UACDemoV10,0';
 import { hasAngryKeyword, angryReaction, moodFace, wakeWordDetected, thinking, speaking } from './face-reactions.js';
 
 let voiceActive = false;
-let lastVoiceTurn = 0;
 let wakeListener = null;
 let idle = null;
-const VOICE_COOLDOWN = 20000;
 const conversationLog = [];
 
 const MAX_CONVERSATION_TURNS = 5;
@@ -92,9 +90,7 @@ async function doSingleTurn(text) {
 
 async function handleVoiceTurn() {
   if (voiceActive) return;
-  if (Date.now() - lastVoiceTurn < VOICE_COOLDOWN) return;
   voiceActive = true;
-  lastVoiceTurn = Date.now();
   if (idle) {
     idle.noteInteraction();
     idle.enabled = false;
@@ -103,11 +99,11 @@ async function handleVoiceTurn() {
   try {
     if (wakeListener) wakeListener.stop();
 
-    // First turn — triggered by wake word
-    setFace('surprised');
+    // First turn — triggered by wake word (force overrides idle animations)
+    setFace('surprised', true);
     await new Promise(r => setTimeout(r, 500));
 
-    let audio = await recordAudio(3);
+    let audio = await recordAudio(5);
     if (!audio) { setFace('idle'); return; }
     setFace('focused');
     playStockPhrase(AUDIO_DEVICE);
@@ -129,7 +125,7 @@ async function handleVoiceTurn() {
       logger.info({ turn }, 'Listening for follow-up...');
       await new Promise(r => setTimeout(r, 300));
 
-      audio = await recordAudio(3);
+      audio = await recordAudio(5);
       if (!audio) {
         logger.info('Silent recording, ending conversation');
         break;

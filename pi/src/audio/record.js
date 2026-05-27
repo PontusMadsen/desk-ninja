@@ -3,10 +3,9 @@ import { readFileSync } from 'fs';
 import logger from '../logger.js';
 
 /**
- * Record from INMP441 I2S mic, return normalized mono 16kHz WAV buffer.
- * Records raw S32_LE 48kHz stereo, then converts via sox.
+ * Record audio for a fixed duration, normalize, reject silence.
  */
-export async function recordAudio(durationSec = 3) {
+export async function recordAudio(durationSec = 4) {
   return new Promise((resolve, reject) => {
     logger.info({ duration: durationSec }, 'Recording...');
 
@@ -17,24 +16,19 @@ export async function recordAudio(durationSec = 3) {
       : ['-D', micDevice, '-f', 'S32_LE', '-r', '48000', '-c', '2', '-d', String(durationSec), '-t', 'wav', '-q', '/tmp/ninja_rec_raw.wav'];
     const rec = spawn('arecord', recArgs);
 
-    rec.stderr.on('data', (data) => {
-      logger.debug({ stderr: data.toString() }, 'arecord stderr');
-    });
-
     rec.on('close', (code) => {
-      if (code !== 0) return reject(new Error(`arecord exit ${code}`));
+      if (code !== 0 && code !== null) return reject(new Error(`arecord exit ${code}`));
       try {
         const soxCmd = direct
           ? 'sox /tmp/ninja_rec_raw.wav -r 16000 -c 1 -b 16 /tmp/ninja_rec.wav norm'
           : 'sox /tmp/ninja_rec_raw.wav -r 16000 -c 1 -b 16 /tmp/ninja_rec.wav remix 1 norm';
         execSync(soxCmd, { timeout: 10000 });
         const buf = readFileSync('/tmp/ninja_rec.wav');
-        // Check audio level — reject silence
-        const rms = execSync('sox /tmp/ninja_rec.wav -n stat 2>&1 | grep "RMS.*amplitude" | awk \'{print $NF}\'').toString().trim();
+        const rms = execSync("sox /tmp/ninja_rec.wav -n stat 2>&1 | grep 'RMS.*amplitude' | awk '{print $NF}'").toString().trim();
         const rmsVal = parseFloat(rms) || 0;
         logger.info({ size: buf.length, rms: rmsVal }, 'Recording done');
-        if (rmsVal < 0.01) {
-          logger.info('Silent recording, skipping');
+        if (rmsVal < 0.02) {
+          logger.info('Too quiet, skipping');
           resolve(null);
           return;
         }

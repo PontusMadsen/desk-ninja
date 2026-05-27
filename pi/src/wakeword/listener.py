@@ -23,7 +23,7 @@ MIC_DIRECT = os.environ.get('MIC_DIRECT', '')
 
 SAMPLE_RATE = 16000
 CHUNK_SAMPLES = 1280  # 80ms at 16kHz
-THRESHOLD = 0.8
+THRESHOLD = 0.5
 COOLDOWN_SEC = 10
 
 def main():
@@ -79,11 +79,11 @@ def main():
 
         try:
             if MIC_DIRECT:
-                # File-based: record 1s WAV, feed to model
+                # File-based: record 2s WAV, feed to model
                 subprocess.run(
                     ['arecord', '-D', MIC_DEVICE, '-f', 'S16_LE', '-r', '16000',
-                     '-c', '1', '-d', '1', '-q', '/tmp/wake_chunk.wav'],
-                    timeout=3
+                     '-c', '1', '-d', '2', '-q', '/tmp/wake_chunk.wav'],
+                    timeout=5
                 )
                 if paused:
                     continue

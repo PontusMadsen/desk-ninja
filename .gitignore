@@ -7,3 +7,7 @@ node_modules/
 pi/config/local.json
 .env
 .DS_Store
+pi/data/
+pi/google-tts-key.json
+pi/oled-frames/
+pi/frames

@@ -25,8 +25,13 @@ const HOME = process.env.HOME || '/home/ninja';
 const PIPER_BIN = `${HOME}/.local/bin/piper`;
 const PIPER_MODEL = `${HOME}/.local/share/piper/en_US-lessac-medium.onnx`;
 
+// Cache token for 50 minutes (expires at 60)
+let cachedToken = null;
+let tokenExpiry = 0;
+
 async function getAccessToken() {
-  // Use the service account key to get an OAuth2 token
+  if (cachedToken && Date.now() < tokenExpiry) return cachedToken;
+
   const key = JSON.parse(readFileSync(KEY_FILE, 'utf-8'));
 
   // Create JWT
@@ -55,7 +60,9 @@ async function getAccessToken() {
   });
 
   const data = await resp.json();
-  return data.access_token;
+  cachedToken = data.access_token;
+  tokenExpiry = Date.now() + 50 * 60 * 1000; // cache for 50 min
+  return cachedToken;
 }
 
 /**

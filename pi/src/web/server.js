@@ -45,7 +45,14 @@ export function startWebServer(state) {
     next();
   });
 
-  app.use(express.static(join(__dirname, 'public')));
+  app.use(express.static(join(__dirname, 'public'), {
+    etag: false,
+    maxAge: 0,
+    setHeaders: (res) => {
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.set('Pragma', 'no-cache');
+    }
+  }));
 
   // --- Status ---
   app.get('/api/status', (req, res) => {
@@ -309,7 +316,20 @@ export function startWebServer(state) {
     const { workspace, date } = req.query;
     let tasks = getTasks();
     if (workspace) tasks = tasks.filter(t => t.workspace === workspace);
-    if (date) tasks = tasks.filter(t => (t.date || '') === date || !t.date);
+    if (date) {
+      const d = new Date(date);
+      const dow = d.getDay(); // 0=Sun
+      tasks = tasks.filter(t => {
+        if ((t.date || '') === date) return true; // exact date match
+        if (!t.date) return true; // no date = show everywhere
+        if (!t.repeat) return false; // non-recurring, wrong date
+        // Recurring: show if it would apply to this day
+        if (t.repeat === 'daily') return true;
+        if (t.repeat === 'weekdays') return dow >= 1 && dow <= 5;
+        if (t.repeat === 'weekly') return new Date(t.date).getDay() === dow;
+        return false;
+      });
+    }
     res.json({ tasks, workspaces: getWorkspaces() });
   });
 
@@ -506,6 +526,16 @@ export function startWebServer(state) {
     }
   });
 
+  app.post('/api/keys/remove-google', (req, res) => {
+    try {
+      const keyPath = join(PI_ROOT, 'google-tts-key.json');
+      if (existsSync(keyPath)) writeFileSync(keyPath, '{}');
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // --- Setup Wizard ---
   app.post('/api/setup/google-key', (req, res) => {
     const { json } = req.body;
@@ -558,7 +588,7 @@ export function startWebServer(state) {
   });
 
   app.post('/api/update', (req, res) => {
-    exec('cd ' + REPO_ROOT + ' && git checkout -- . && git clean -fd pi/src 2>/dev/null; git pull origin main', (err, stdout, stderr) => {
+    exec('cd ' + REPO_ROOT + ' && git checkout -- . && git pull origin main', (err, stdout, stderr) => {
       if (err) return res.json({ ok: false, output: stderr });
       const output = stdout.trim();
       logger.info({ output }, 'Git pull');

@@ -334,6 +334,15 @@ body{
           <h3>Focus minutes — this week</h3>
           <div class="bars" id="weekBars"></div>
         </div>
+        <div class="stats" id="statRow2" style="margin-top:14px"></div>
+        <div class="card">
+          <h3>Habit streaks</h3>
+          <div id="habitStreaks"></div>
+        </div>
+        <div class="card">
+          <h3>Recent conversations</h3>
+          <div id="recentConvos" style="font:400 11px var(--mono);color:var(--ink-2);max-height:200px;overflow-y:auto"></div>
+        </div>
       </div>
 
       <!-- SETTINGS -->
@@ -378,17 +387,13 @@ body{
             <select id="s-key-name" style="border:1px solid var(--line-2);border-radius:var(--r-sm);padding:5px;font:400 11px var(--mono);background:var(--surface-3)">
               <option value="GROQ_API_KEY">GROQ_API_KEY</option>
               <option value="ANTHROPIC_API_KEY">ANTHROPIC_API_KEY</option>
+              <option value="GOOGLE_TTS">GOOGLE_TTS (JSON)</option>
             </select>
             <input type="password" id="s-key-value" placeholder="new value" style="flex:1;min-width:150px;border:1px solid var(--line-2);border-radius:var(--r-sm);padding:6px 8px;font:400 12px var(--mono);background:var(--surface-3)">
             <button class="btn" id="s-key-save" style="width:auto;height:32px;padding:0 16px">Set</button>
           </div>
-          <div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
-            <label style="font:600 9.5px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);margin-bottom:6px;display:block">Google Cloud TTS Key (JSON)</label>
+          <div id="s-google-paste" style="margin-top:8px;display:none">
             <textarea id="s-google-key" style="width:100%;height:60px;border:1px solid var(--line-2);border-radius:var(--r-sm);padding:8px;font:400 10px var(--mono);background:var(--surface-3);resize:vertical" placeholder="Paste service account JSON here..."></textarea>
-            <div style="display:flex;gap:6px;align-items:center;margin-top:6px">
-              <button class="btn" id="s-google-save" style="width:auto;height:32px;padding:0 16px">Save Google Key</button>
-              <span style="font:500 10px var(--mono);color:var(--ink-3)" id="s-google-status"></span>
-            </div>
           </div>
         </div>
         <div class="card">
@@ -509,7 +514,12 @@ function renderTasks(){
       <div class="check">${CHK}</div>
       <input class="t-title" value="${esc(tk.text)}">
       <div class="t-pdot" data-p="${p}" title="Priority"></div>
-      ${tk.repeat?`<span style="font:500 8px var(--mono);color:var(--ink-3);padding:2px 4px;border:1px solid var(--line-2);border-radius:3px">${tk.repeat==='daily'?'⟳D':tk.repeat==='weekdays'?'⟳W':tk.repeat==='weekly'?'⟳7':''}</span>`:''}
+      <select class="t-repeat" style="border:1px solid var(--line-2);border-radius:3px;padding:1px 2px;font:500 8px var(--mono);color:var(--ink-3);background:var(--surface)">
+        <option value="" ${!tk.repeat?'selected':''}>once</option>
+        <option value="daily" ${tk.repeat==='daily'?'selected':''}>⟳ daily</option>
+        <option value="weekdays" ${tk.repeat==='weekdays'?'selected':''}>⟳ wkdays</option>
+        <option value="weekly" ${tk.repeat==='weekly'?'selected':''}>⟳ weekly</option>
+      </select>
       <button class="iconbtn act-focus" title="Focus on this">${PLAY}</button>
       <button class="iconbtn act-del" title="Delete">${X}</button>
     </div>`);
@@ -541,6 +551,10 @@ $('#tList').on('click','.act-del',async function(){
   const id=$(this).closest('.task').data('id');
   await del('tasks/'+id);
   loadTasks();
+});
+$('#tList').on('change','.t-repeat',async function(){
+  const id=$(this).closest('.task').data('id');
+  await put('tasks/'+id,{repeat:$(this).val()||null});
 });
 $('#tList').on('click','.act-focus',function(){
   const id=$(this).closest('.task').data('id');
@@ -704,9 +718,15 @@ $('#newHabit').on('keydown',async function(e){
 
 // === INSIGHTS ===
 async function renderInsights(){
-  const d=await api('focus/stats').catch(()=>({focusToday:0,focusWeek:0,weekDays:[]}));
+  const [d, convos] = await Promise.all([
+    api('focus/stats').catch(()=>({focusToday:0,focusWeek:0,focusTotal:0,totalSessions:0,weekDays:[]})),
+    api('conversations').catch(()=>({log:[]}))
+  ]);
   const tdone=tasks.filter(t=>t.done).length;
-  const hdone=habits.filter(h=>h.checkedToday).length;
+  const hdone=habits.filter(h=>h.checkedOnDate).length;
+  const bestStreak=habits.reduce((m,h)=>Math.max(m,h.streak||0),0);
+
+  // Top row stats
   const stats=[
     {v:d.focusToday||0,s:'m',k:'Focus today'},
     {v:d.focusWeek||0,s:'m',k:'Focus this week'},
@@ -714,6 +734,8 @@ async function renderInsights(){
     {v:Math.round(hdone/Math.max(habits.length,1)*100),s:'%',k:'Habit rate'},
   ];
   $('#statRow').html(stats.map(s=>`<div class="stat"><div class="v">${s.v}<small>${s.s}</small></div><div class="k">${s.k}</div></div>`).join(''));
+
+  // Weekly chart
   const days=d.weekDays||[];
   const max=Math.max(...days.map(x=>x.m||0),1);
   const labels=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
@@ -722,6 +744,46 @@ async function renderInsights(){
     const isT=(i===(today+6)%7);
     return `<div class="bar-col${isT?' is-today':''}"><div class="bv">${x.m||0}</div><div class="bar${isT?' today':''}" style="height:${Math.max((x.m||0)/max*100,4)}%"></div><div class="bl">${labels[i]}</div></div>`;
   }).join(''));
+
+  // Second row stats
+  const totalHrs=Math.floor((d.focusTotal||0)/60);
+  const totalMin=(d.focusTotal||0)%60;
+  const stats2=[
+    {v:totalHrs+'h'+totalMin,s:'m',k:'Focus all-time'},
+    {v:d.totalSessions||0,s:'',k:'Total sessions'},
+    {v:bestStreak,s:'d',k:'Best streak'},
+    {v:(convos.log||[]).length,s:'',k:'Conversations'},
+  ];
+  $('#statRow2').html(stats2.map(s=>`<div class="stat"><div class="v">${s.v}<small>${s.s}</small></div><div class="k">${s.k}</div></div>`).join(''));
+
+  // Habit streaks
+  if(habits.length){
+    $('#habitStreaks').html(habits.map(h=>{
+      const pct=Math.min((h.streak||0)/30*100,100);
+      return `<div style="display:flex;align-items:center;gap:10px;margin:6px 0">
+        <span style="font:500 11px Archivo;width:100px;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(h.name)}</span>
+        <div style="flex:1;height:8px;background:var(--surface-3);border-radius:4px;overflow:hidden"><div style="height:100%;width:${pct}%;background:var(--ink);border-radius:4px"></div></div>
+        <span style="font:600 12px var(--mono);min-width:30px;text-align:right">${h.streak||0}d</span>
+      </div>`;
+    }).join(''));
+  } else {
+    $('#habitStreaks').html('<span style="color:var(--ink-3)">No habits tracked</span>');
+  }
+
+  // Recent conversations
+  const recent=(convos.log||[]).slice(-5).reverse();
+  if(recent.length){
+    $('#recentConvos').html(recent.map(c=>{
+      const t=new Date(c.time).toLocaleString();
+      return `<div style="margin:6px 0;padding:6px;border-bottom:1px solid var(--line)">
+        <div style="color:var(--ink-3);font-size:9px">${t}</div>
+        <div style="color:var(--ink)">You: ${esc(c.user)}</div>
+        <div>Ninja: ${esc(c.ninja)}</div>
+      </div>`;
+    }).join(''));
+  } else {
+    $('#recentConvos').html('<span style="color:var(--ink-3)">No conversations yet</span>');
+  }
 }
 
 // === CHAT ===
@@ -754,7 +816,14 @@ async function loadSettings(){
   $('#s-face-grid').html(faces.faces.map(f=>`<div class="chip" data-face="${f}">${f}</div>`).join(''));
   $('#s-personality').val(pers.text);
   $('#s-tts-voice').val(tts.voice);$('#s-tts-rate').val(tts.speakingRate);
-  $('#s-keys-list').html(Object.entries(keys.keys).map(([k,v])=>`<div style="font:400 11px var(--mono);color:var(--ink-2);margin:4px 0"><strong>${k}:</strong> ${v}</div>`).join(''));
+  $('#s-keys-list').html(Object.entries(keys.keys).map(([k,v])=>`<div style="font:400 11px var(--mono);color:var(--ink-2);margin:4px 0;display:flex;align-items:center;gap:8px"><strong>${k}:</strong> <span style="flex:1">${v}</span>${v!=='NOT SET'?`<button class="btn key-remove" data-key="${k}" style="font-size:9px;padding:2px 6px;height:auto;border-color:var(--ink-3);color:var(--ink-3)">remove</button>`:''}</div>`).join(''));
+  $('#s-keys-list').off('click','.key-remove').on('click','.key-remove',async function(){
+    const k=$(this).data('key');
+    if(!confirm('Remove '+k+'?'))return;
+    if(k==='GOOGLE_TTS'){await post('keys/remove-google',{})}
+    else{await post('keys',{key:k,value:''})}
+    loadSettings();
+  });
   if(conv.log&&conv.log.length){
     $('#s-conv-log').html(conv.log.map(e=>{const t=new Date(e.time).toLocaleTimeString();return `<div style="margin:4px 0"><strong>[${t}]</strong> ${esc(e.user)}<br><span style="color:var(--ink)">${esc(e.ninja)}</span></div>`}).join(''));
   }
@@ -775,15 +844,29 @@ $('#s-tts-save').on('click',async function(){
   $('#s-tts-status').text('Applied immediately');
   setTimeout(()=>{$(this).text('Save').css({background:'',color:''});$('#s-tts-status').text('')},2000);
 })
-$('#s-key-save').on('click',async function(){const k=$('#s-key-name').val(),v=$('#s-key-value').val();if(!v)return;await post('keys',{key:k,value:v});$('#s-key-value').val('');loadSettings()});
-$('#s-google-save').on('click',async function(){
-  const json=$('#s-google-key').val().trim();
-  if(!json){$('#s-google-status').text('Paste the JSON first');return}
-  try{JSON.parse(json)}catch{$('#s-google-status').text('Invalid JSON');return}
-  $(this).text('Saving...').css({background:'var(--ink)',color:'#fff'});
-  await post('setup/google-key',{json});
-  $(this).text('Saved ✓');$('#s-google-status').text('Applied — restart to use');$('#s-google-key').val('');
-  setTimeout(()=>$(this).text('Save Google Key').css({background:'',color:''}),2000);
+// Show/hide Google JSON textarea based on dropdown
+$('#s-key-name').on('change',function(){
+  $('#s-google-paste').toggle($(this).val()==='GOOGLE_TTS');
+  $('#s-key-value').toggle($(this).val()!=='GOOGLE_TTS');
+});
+
+$('#s-key-save').on('click',async function(){
+  const k=$('#s-key-name').val();
+  if(k==='GOOGLE_TTS'){
+    const json=$('#s-google-key').val().trim();
+    if(!json)return;
+    try{JSON.parse(json)}catch{alert('Invalid JSON');return}
+    $(this).text('Saving...');
+    await post('setup/google-key',{json});
+    $('#s-google-key').val('');
+  }else{
+    const v=$('#s-key-value').val();if(!v)return;
+    $(this).text('Saving...');
+    await post('keys',{key:k,value:v});
+    $('#s-key-value').val('');
+  }
+  $(this).text('Saved ✓');
+  setTimeout(()=>$(this).text('Set'),2000);
   loadSettings();
 })
 $('#s-test-speaker').on('click',async function(){$('#s-test-status').text('Testing...');const d=await post('test/speaker',{});$('#s-test-status').text(d.ok?'Speaker OK':'FAILED')});

@@ -230,7 +230,11 @@ export function getFocusStats() {
     weekDays.push({ date: ds, m });
   }
 
-  return { focusToday, focusWeek, weekDays };
+  // All-time stats
+  const focusTotal = sessions.reduce((a, s) => a + s.duration, 0);
+  const totalSessions = sessions.length;
+
+  return { focusToday, focusWeek, focusTotal, totalSessions, weekDays };
 }
 
 // --- Conversation Log ---

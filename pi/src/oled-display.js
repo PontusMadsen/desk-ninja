@@ -19,9 +19,10 @@ function sendFace(state) {
   }
 }
 
-export function setFace(state) {
-  if (playOnceMode) return; // don't interrupt play-once
-  if (state === currentFace) return; // dedup
+export function setFace(state, force = false) {
+  if (playOnceMode && !force) return; // don't interrupt play-once
+  if (force) playOnceMode = false; // cancel any running animation
+  if (state === currentFace && !force) return;
   sendFace(state);
 }
 
