@@ -37,7 +37,7 @@ Say **"Hey Ninja"** and the ninja wakes up, listens, thinks, and responds — wi
 - Raspberry Pi Zero 2 W
 - ReSpeaker 2-Mic HAT (or compatible I2S audio HAT)
 - SH1106 128x64 I2C OLED display (connected via HAT's I2C Grove connector)
-- Small speaker (wired to HAT speaker header)
+- Small speaker wired to HAT speaker header (e.g., Mini Horn 3070, 8Ω 3W)
 - Micro SD card (4GB+)
 
 **OLED Wiring (Grove I2C connector):**
