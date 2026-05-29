@@ -23,7 +23,7 @@ MIC_DIRECT = os.environ.get('MIC_DIRECT', '')
 
 SAMPLE_RATE = 16000
 CHUNK_SAMPLES = 1280  # 80ms at 16kHz
-THRESHOLD = 0.5
+THRESHOLD = 0.3
 COOLDOWN_SEC = 10
 
 def main():

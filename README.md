@@ -89,8 +89,11 @@ Open `http://ninja.local` in your browser and follow the setup wizard:
 - **Wake word:** Say "Hey Ninja", wait for the surprised face, then speak
 - **Conversation mode:** After the ninja responds, just keep talking — no need to say the wake word again for follow-up questions
 - **Insult it:** Say something mean and watch the angry animation play
+- **Bluetooth speaker:** Pair your phone via Bluetooth (shows as "ninja") and play music through the ninja's speaker
+- **Music + voice:** Pause music from your phone before saying "Hey Ninja" — the mic can't hear you over the speaker
 - **Web UI:** Access tasks, habits, focus timer, and settings at `http://ninja.local`
 - **Desktop app:** Tauri-based native macOS app available (see releases)
+- **Claude Code hooks:** The ninja's face reacts to your CLI — see `hooks/` folder for setup
 
 ## API Keys
 

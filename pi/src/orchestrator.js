@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { execSync } from 'child_process';
 
 import logger from './logger.js';
 import { readFileSync } from 'fs';
@@ -99,6 +100,12 @@ async function handleVoiceTurn() {
   try {
     if (wakeListener) wakeListener.stop();
 
+    // Pause BT audio and prevent restart during voice turn
+    try {
+      execSync('touch /tmp/ninja-voice-active');
+      execSync('sudo pkill -f bluealsa-aplay 2>/dev/null');
+    } catch {}
+
     // First turn — triggered by wake word (force overrides idle animations)
     setFace('surprised', true);
     await new Promise(r => setTimeout(r, 500));
@@ -150,6 +157,8 @@ async function handleVoiceTurn() {
   } finally {
     voiceActive = false;
     if (idle) idle.enabled = true;
+    // Allow BT audio to resume
+    try { execSync('rm -f /tmp/ninja-voice-active'); } catch {}
     // Restart wake word listener with delay to avoid TTS echo
     if (wakeListener) {
       wakeListener.stop();
